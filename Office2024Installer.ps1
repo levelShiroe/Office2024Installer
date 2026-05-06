@@ -3,11 +3,11 @@ Add-Type -AssemblyName System.Drawing
 
 $base = "C:\Office2024"
 $odtUrl = "https://download.microsoft.com/download/6c1eeb25-cf8b-41d9-8d0d-cc1dbc032140/officedeploymenttool_19929-20062.exe"
+
 $odtExe = "$base\officedeploymenttool.exe"
 $setup = "$base\setup.exe"
 $config = "$base\config.xml"
 $officeFolder = "$base\Office"
-$officeDataFolder = "$base\Office\Data"
 $estimatedGB = 4.5
 
 function Log($msg) {
@@ -17,12 +17,16 @@ function Log($msg) {
 }
 
 function Get-OfficeDownloadSize {
-    if (Test-Path $officeDataFolder) {
-        return (Get-ChildItem $officeDataFolder -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
-    }
     if (Test-Path $officeFolder) {
-        return (Get-ChildItem $officeFolder -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+        return (
+            Get-ChildItem `
+                $officeFolder `
+                -Recurse `
+                -ErrorAction SilentlyContinue |
+            Measure-Object Length -Sum
+        ).Sum
     }
+
     return 0
 }
 
@@ -41,35 +45,26 @@ function Create-Config {
     $excluded = $excluded | Sort-Object -Unique
 
     $excludeXml = ""
+
     foreach ($app in $excluded) {
         $excludeXml += "      <ExcludeApp ID=`"$app`"/>`r`n"
     }
 
     $xml = @"
 <Configuration>
-  <Add OfficeClientEdition="64" Channel="PerpetualVL2024" SourcePath="C:\Office2024">
+  <Add OfficeClientEdition="64" Channel="PerpetualVL2024">
     <Product ID="ProPlus2024Volume">
       <Language ID="en-us"/>
 $excludeXml    </Product>
   </Add>
   <Display Level="Full" AcceptEULA="TRUE"/>
-  <Property Name="FORCEAPPSHUTDOWN" Value="TRUE"/>
 </Configuration>
 "@
 
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($config, $xml, $utf8NoBom)
-}
-
-function Run-Cmd {
-    param([string]$Command)
-
-    return Start-Process `
-        -FilePath "cmd.exe" `
-        -ArgumentList "/c", $Command `
-        -WorkingDirectory $base `
-        -Wait `
-        -PassThru
+    Set-Content `
+        -Path $config `
+        -Value $xml `
+        -Encoding UTF8
 }
 
 function Update-DownloadStats {
@@ -107,7 +102,11 @@ function Run-Installer {
             $progress.Value = 10
 
             Log "Extracting Office Deployment Tool..."
-            Start-Process -FilePath $odtExe -ArgumentList "/quiet", "/extract:$base" -Wait
+            Start-Process `
+                -FilePath $odtExe `
+                -ArgumentList "/quiet", "/extract:$base" `
+                -Wait
+
             $progress.Value = 20
         } else {
             Log "Office Deployment Tool already exists."
@@ -127,8 +126,8 @@ function Run-Installer {
             Log "Downloading Office files..."
 
             $download = Start-Process `
-                -FilePath "cmd.exe" `
-                -ArgumentList "/c", "cd /d C:\Office2024 && setup.exe /download config.xml" `
+                -FilePath $setup `
+                -ArgumentList "/download", $config `
                 -WorkingDirectory $base `
                 -PassThru
 
@@ -150,7 +149,11 @@ function Run-Installer {
                 }
 
                 $gb = [math]::Round($size / 1GB, 2)
-                $percent = [math]::Min(100, [math]::Round(($gb / $estimatedGB) * 100, 1))
+
+                $percent = [math]::Min(
+                    100,
+                    [math]::Round(($gb / $estimatedGB) * 100, 1)
+                )
 
                 if ($speed -gt 0) {
                     $remainingGB = [math]::Max(0, $estimatedGB - $gb)
@@ -174,7 +177,7 @@ function Run-Installer {
             Update-DownloadStats -GB $estimatedGB -Speed 0 -Percent 100 -ETA "00:00"
             Log "Office files downloaded."
         } else {
-            Log "Office files already exist. Skipping download."
+            Log "Office files already downloaded. Skipping download."
             $progress.Value = 70
             $downloadLabel.Text = "Downloaded: already cached"
             $speedLabel.Text = "0 MB/s"
@@ -184,14 +187,18 @@ function Run-Installer {
         Log "Installing Office..."
         $progress.Value = 80
 
-        $install = Run-Cmd "cd /d C:\Office2024 && setup.exe /configure config.xml"
+        $install = Start-Process `
+            -FilePath $setup `
+            -ArgumentList "/configure", $config `
+            -WorkingDirectory $base `
+            -Wait `
+            -PassThru
 
         if ($install.ExitCode -eq 0) {
             $progress.Value = 100
             Log "Office installed successfully."
         } else {
             Log "ERROR: Install failed. Exit code: $($install.ExitCode)"
-            Log "Manual test: cd /d C:\Office2024 && setup.exe /configure config.xml"
         }
     }
     catch {
@@ -253,6 +260,18 @@ $exitButton.Size = New-Object System.Drawing.Size(180, 40)
 $exitButton.Add_Click({ $form.Close() })
 $form.Controls.Add($exitButton)
 
+$etaLabel = New-Object System.Windows.Forms.Label
+$etaLabel.Text = "ETA: --:--"
+$etaLabel.Location = New-Object System.Drawing.Point(300, 285)
+$etaLabel.Size = New-Object System.Drawing.Size(160, 20)
+$form.Controls.Add($etaLabel)
+
+$downloadLabel = New-Object System.Windows.Forms.Label
+$downloadLabel.Text = "Downloaded: 0 GB / $estimatedGB GB"
+$downloadLabel.Location = New-Object System.Drawing.Point(25, 310)
+$downloadLabel.Size = New-Object System.Drawing.Size(260, 20)
+$form.Controls.Add($downloadLabel)
+
 $speedTitle = New-Object System.Windows.Forms.Label
 $speedTitle.Text = "Speed:"
 $speedTitle.Location = New-Object System.Drawing.Point(300, 310)
@@ -264,18 +283,6 @@ $speedLabel.Text = "0 MB/s"
 $speedLabel.Location = New-Object System.Drawing.Point(360, 310)
 $speedLabel.Size = New-Object System.Drawing.Size(140, 20)
 $form.Controls.Add($speedLabel)
-
-$downloadLabel = New-Object System.Windows.Forms.Label
-$downloadLabel.Text = "Downloaded: 0 GB / $estimatedGB GB"
-$downloadLabel.Location = New-Object System.Drawing.Point(25, 310)
-$downloadLabel.Size = New-Object System.Drawing.Size(260, 20)
-$form.Controls.Add($downloadLabel)
-
-$etaLabel = New-Object System.Windows.Forms.Label
-$etaLabel.Text = "ETA: --:--"
-$etaLabel.Location = New-Object System.Drawing.Point(300, 285)
-$etaLabel.Size = New-Object System.Drawing.Size(160, 20)
-$form.Controls.Add($etaLabel)
 
 $progress = New-Object System.Windows.Forms.ProgressBar
 $progress.Location = New-Object System.Drawing.Point(25, 340)
