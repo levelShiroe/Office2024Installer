@@ -20,11 +20,9 @@ function Get-OfficeDownloadSize {
     if (Test-Path $officeDataFolder) {
         return (Get-ChildItem $officeDataFolder -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
     }
-
     if (Test-Path $officeFolder) {
         return (Get-ChildItem $officeFolder -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
     }
-
     return 0
 }
 
@@ -37,9 +35,8 @@ function Create-Config {
         }
     }
 
-    # Always exclude junk/extras
     $excluded += "Teams"
-    $excluded += "Lync"      # Skype for Business
+    $excluded += "Lync"
     $excluded += "OneDrive"
     $excluded = $excluded | Sort-Object -Unique
 
@@ -64,6 +61,17 @@ $excludeXml    </Product>
     [System.IO.File]::WriteAllText($config, $xml, $utf8NoBom)
 }
 
+function Run-Cmd {
+    param([string]$Command)
+
+    return Start-Process `
+        -FilePath "cmd.exe" `
+        -ArgumentList "/c", $Command `
+        -WorkingDirectory $base `
+        -Wait `
+        -PassThru
+}
+
 function Update-DownloadStats {
     param(
         [double]$GB,
@@ -73,7 +81,7 @@ function Update-DownloadStats {
     )
 
     $progress.Value = [math]::Min(100, [int]$Percent)
-    $speedLabel.Text = "Speed: $([math]::Round($Speed, 2)) MB/s"
+    $speedLabel.Text = "$([math]::Round($Speed, 2)) MB/s"
     $downloadLabel.Text = "Downloaded: $GB GB / $estimatedGB GB"
     $etaLabel.Text = "ETA: $ETA"
 
@@ -83,7 +91,7 @@ function Update-DownloadStats {
 function Run-Installer {
     $installButton.Enabled = $false
     $progress.Value = 0
-    $speedLabel.Text = "Speed: 0 MB/s"
+    $speedLabel.Text = "0 MB/s"
     $downloadLabel.Text = "Downloaded: 0 GB / $estimatedGB GB"
     $etaLabel.Text = "ETA: --:--"
 
@@ -119,8 +127,8 @@ function Run-Installer {
             Log "Downloading Office files..."
 
             $download = Start-Process `
-                -FilePath $setup `
-                -ArgumentList "/download", "config.xml" `
+                -FilePath "cmd.exe" `
+                -ArgumentList "/c", "cd /d C:\Office2024 && setup.exe /download config.xml" `
                 -WorkingDirectory $base `
                 -PassThru
 
@@ -169,28 +177,21 @@ function Run-Installer {
             Log "Office files already exist. Skipping download."
             $progress.Value = 70
             $downloadLabel.Text = "Downloaded: already cached"
-            $speedLabel.Text = "Speed: 0 MB/s"
+            $speedLabel.Text = "0 MB/s"
             $etaLabel.Text = "ETA: 00:00"
         }
 
         Log "Installing Office..."
         $progress.Value = 80
 
-        Set-Location $base
-
-        # Raid boss fix: run ODT exactly like manual CMD from C:\Office2024
-        $install = Start-Process `
-            -FilePath "cmd.exe" `
-            -ArgumentList "/c", "cd /d C:\Office2024 && setup.exe /configure config.xml" `
-            -Wait `
-            -PassThru
+        $install = Run-Cmd "cd /d C:\Office2024 && setup.exe /configure config.xml"
 
         if ($install.ExitCode -eq 0) {
             $progress.Value = 100
             Log "Office installed successfully."
         } else {
             Log "ERROR: Install failed. Exit code: $($install.ExitCode)"
-            Log "Manual fallback: open CMD as admin, run: cd /d C:\Office2024 && setup.exe /configure config.xml"
+            Log "Manual test: cd /d C:\Office2024 && setup.exe /configure config.xml"
         }
     }
     catch {
@@ -252,10 +253,16 @@ $exitButton.Size = New-Object System.Drawing.Size(180, 40)
 $exitButton.Add_Click({ $form.Close() })
 $form.Controls.Add($exitButton)
 
+$speedTitle = New-Object System.Windows.Forms.Label
+$speedTitle.Text = "Speed:"
+$speedTitle.Location = New-Object System.Drawing.Point(300, 310)
+$speedTitle.Size = New-Object System.Drawing.Size(60, 20)
+$form.Controls.Add($speedTitle)
+
 $speedLabel = New-Object System.Windows.Forms.Label
-$speedLabel.Text = "Speed: 0 MB/s"
-$speedLabel.Location = New-Object System.Drawing.Point(25, 285)
-$speedLabel.Size = New-Object System.Drawing.Size(220, 20)
+$speedLabel.Text = "0 MB/s"
+$speedLabel.Location = New-Object System.Drawing.Point(360, 310)
+$speedLabel.Size = New-Object System.Drawing.Size(140, 20)
 $form.Controls.Add($speedLabel)
 
 $downloadLabel = New-Object System.Windows.Forms.Label
