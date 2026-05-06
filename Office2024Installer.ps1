@@ -1,6 +1,3 @@
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-
 $base = "C:\Office2024"
 $odtUrl = "https://download.microsoft.com/download/6c1eeb25-cf8b-41d9-8d0d-cc1dbc032140/officedeploymenttool_19929-20062.exe"
 
@@ -8,49 +5,81 @@ $odtExe = "$base\officedeploymenttool.exe"
 $setup = "$base\setup.exe"
 $config = "$base\config.xml"
 $officeFolder = "$base\Office"
-$estimatedGB = 4.5
 
-function Log($msg) {
-    $statusBox.AppendText("[$(Get-Date -Format HH:mm:ss)] $msg`r`n")
-    $statusBox.ScrollToCaret()
-    [System.Windows.Forms.Application]::DoEvents()
+New-Item -ItemType Directory -Path $base -Force | Out-Null
+Set-Location $base
+
+if (!(Test-Path $setup)) {
+    Write-Host "Downloading Office Deployment Tool..."
+    Invoke-WebRequest $odtUrl -OutFile $odtExe
+
+    Write-Host "Extracting Office Deployment Tool..."
+    Start-Process `
+        -FilePath $odtExe `
+        -ArgumentList "/quiet", "/extract:$base" `
+        -Wait
 }
 
-function Get-OfficeDownloadSize {
-    if (Test-Path $officeFolder) {
-        return (
-            Get-ChildItem `
-                $officeFolder `
-                -Recurse `
-                -ErrorAction SilentlyContinue |
-            Measure-Object Length -Sum
-        ).Sum
-    }
-
-    return 0
+if (!(Test-Path $setup)) {
+    Write-Host "setup.exe missing."
+    Read-Host "Press Enter to exit"
+    exit
 }
 
-function Create-Config {
-    $excluded = @()
+function Ask-App {
+    param([string]$Name)
 
-    foreach ($cb in $checkboxes) {
-        if (-not $cb.Checked) {
-            $excluded += $cb.Text
+    while ($true) {
+        Write-Host ""
+        Write-Host "Install $Name ? [Y/N] " -NoNewline
+
+        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        $choice = $key.Character.ToString().ToUpper()
+
+        if ($choice -eq "Y") {
+            Write-Host "Y"
+            return $true
+        }
+
+        if ($choice -eq "N") {
+            Write-Host "N"
+            return $false
         }
     }
+}
 
-    $excluded += "Teams"
-    $excluded += "Lync"
-    $excluded += "OneDrive"
-    $excluded = $excluded | Sort-Object -Unique
+$apps = @(
+    "Word",
+    "Excel",
+    "PowerPoint",
+    "Outlook",
+    "OneNote",
+    "Access",
+    "Publisher"
+)
 
-    $excludeXml = ""
+$excluded = @()
 
-    foreach ($app in $excluded) {
-        $excludeXml += "      <ExcludeApp ID=`"$app`"/>`r`n"
+foreach ($app in $apps) {
+    if (-not (Ask-App $app)) {
+        $excluded += $app
     }
+}
 
-    $xml = @"
+# Always exclude these unwanted apps/components
+$excluded += "Teams"
+$excluded += "Lync"      # Skype for Business
+$excluded += "OneDrive"
+
+$excluded = $excluded | Sort-Object -Unique
+
+$excludeXml = ""
+
+foreach ($app in $excluded) {
+    $excludeXml += "      <ExcludeApp ID=`"$app`"/>`r`n"
+}
+
+$xml = @"
 <Configuration>
   <Add OfficeClientEdition="64" Channel="PerpetualVL2024">
     <Product ID="ProPlus2024Volume">
@@ -61,240 +90,106 @@ $excludeXml    </Product>
 </Configuration>
 "@
 
-    Set-Content `
-        -Path $config `
-        -Value $xml `
-        -Encoding UTF8
-}
+Set-Content `
+    -Path $config `
+    -Value $xml `
+    -Encoding UTF8
 
-function Update-DownloadStats {
-    param(
-        [double]$GB,
-        [double]$Speed,
-        [double]$Percent,
-        [string]$ETA
-    )
+Write-Host ""
+Write-Host "Generated config.xml:"
+Write-Host ""
+Get-Content $config
+Write-Host ""
 
-    $progress.Value = [math]::Min(100, [int]$Percent)
-    $speedLabel.Text = "$([math]::Round($Speed, 2)) MB/s"
-    $downloadLabel.Text = "Downloaded: $GB GB / $estimatedGB GB"
-    $etaLabel.Text = "ETA: $ETA"
+if (!(Test-Path $officeFolder)) {
+    Write-Host ""
+    Write-Host "Downloading Office files..."
 
-    [System.Windows.Forms.Application]::DoEvents()
-}
+    $download = Start-Process `
+        -FilePath $setup `
+        -ArgumentList "/download", $config `
+        -WorkingDirectory $base `
+        -PassThru
 
-function Run-Installer {
-    $installButton.Enabled = $false
-    $progress.Value = 0
-    $speedLabel.Text = "0 MB/s"
-    $downloadLabel.Text = "Downloaded: 0 GB / $estimatedGB GB"
-    $etaLabel.Text = "ETA: --:--"
+    $lastSize = 0
+    $lastTime = Get-Date
+    $estimatedGB = 4.5
 
-    try {
-        New-Item -ItemType Directory -Path $base -Force | Out-Null
-        Set-Location $base
+    while (-not $download.HasExited) {
+        Start-Sleep 2
 
-        Log "Starting Office 2024 installer..."
-
-        if (!(Test-Path $setup)) {
-            Log "Downloading Office Deployment Tool..."
-            Invoke-WebRequest $odtUrl -OutFile $odtExe
-            $progress.Value = 10
-
-            Log "Extracting Office Deployment Tool..."
-            Start-Process `
-                -FilePath $odtExe `
-                -ArgumentList "/quiet", "/extract:$base" `
-                -Wait
-
-            $progress.Value = 20
+        if (Test-Path $officeFolder) {
+            $size = (
+                Get-ChildItem `
+                    $officeFolder `
+                    -Recurse `
+                    -ErrorAction SilentlyContinue |
+                Measure-Object Length -Sum
+            ).Sum
         } else {
-            Log "Office Deployment Tool already exists."
-            $progress.Value = 20
+            $size = 0
         }
 
-        if (!(Test-Path $setup)) {
-            Log "ERROR: setup.exe missing."
-            return
-        }
+        $now = Get-Date
+        $seconds = ($now - $lastTime).TotalSeconds
 
-        Log "Creating config.xml..."
-        Create-Config
-        $progress.Value = 25
-
-        if (!(Test-Path $officeFolder)) {
-            Log "Downloading Office files..."
-
-            $download = Start-Process `
-                -FilePath $setup `
-                -ArgumentList "/download", $config `
-                -WorkingDirectory $base `
-                -PassThru
-
-            $lastSize = 0
-            $lastTime = Get-Date
-
-            while (-not $download.HasExited) {
-                Start-Sleep -Milliseconds 700
-
-                $size = Get-OfficeDownloadSize
-                $now = Get-Date
-                $seconds = ($now - $lastTime).TotalSeconds
-                $delta = $size - $lastSize
-
-                if ($seconds -gt 0 -and $delta -gt 0) {
-                    $speed = ($delta / 1MB) / $seconds
-                } else {
-                    $speed = 0
-                }
-
-                $gb = [math]::Round($size / 1GB, 2)
-
-                $percent = [math]::Min(
-                    100,
-                    [math]::Round(($gb / $estimatedGB) * 100, 1)
-                )
-
-                if ($speed -gt 0) {
-                    $remainingGB = [math]::Max(0, $estimatedGB - $gb)
-                    $etaSeconds = ($remainingGB * 1024) / $speed
-                    $etaText = "{0:mm\:ss}" -f ([TimeSpan]::FromSeconds($etaSeconds))
-                } else {
-                    $etaText = "--:--"
-                }
-
-                Update-DownloadStats -GB $gb -Speed $speed -Percent $percent -ETA $etaText
-
-                $lastSize = $size
-                $lastTime = $now
-            }
-
-            if ($download.ExitCode -ne 0) {
-                Log "ERROR: Download failed. Exit code: $($download.ExitCode)"
-                return
-            }
-
-            Update-DownloadStats -GB $estimatedGB -Speed 0 -Percent 100 -ETA "00:00"
-            Log "Office files downloaded."
+        if ($seconds -gt 0) {
+            $speed = (($size - $lastSize) / 1MB) / $seconds
         } else {
-            Log "Office files already downloaded. Skipping download."
-            $progress.Value = 70
-            $downloadLabel.Text = "Downloaded: already cached"
-            $speedLabel.Text = "0 MB/s"
-            $etaLabel.Text = "ETA: 00:00"
+            $speed = 0
         }
 
-        Log "Installing Office..."
-        $progress.Value = 80
+        $gb = [math]::Round($size / 1GB, 2)
 
-        $install = Start-Process `
-            -FilePath $setup `
-            -ArgumentList "/configure", $config `
-            -WorkingDirectory $base `
-            -Wait `
-            -PassThru
+        $percent = [math]::Min(
+            100,
+            [math]::Round(($gb / $estimatedGB) * 100, 1)
+        )
 
-        if ($install.ExitCode -eq 0) {
-            $progress.Value = 100
-            Log "Office installed successfully."
-        } else {
-            Log "ERROR: Install failed. Exit code: $($install.ExitCode)"
-        }
+        Write-Progress `
+            -Activity "Downloading Office 2024" `
+            -Status "$gb GB | $([math]::Round($speed,2)) MB/s | $percent%" `
+            -PercentComplete $percent
+
+        Write-Host (
+            "Downloaded: {0} GB | Speed: {1:N2} MB/s | {2}%" `
+            -f $gb, $speed, $percent
+        )
+
+        $lastSize = $size
+        $lastTime = $now
     }
-    catch {
-        Log "ERROR: $($_.Exception.Message)"
+
+    if ($download.ExitCode -ne 0) {
+        Write-Host ""
+        Write-Host "Download failed."
+        Write-Host "Exit code: $($download.ExitCode)"
+        Read-Host "Press Enter to exit"
+        exit
     }
-    finally {
-        $installButton.Enabled = $true
-    }
+} else {
+    Write-Host ""
+    Write-Host "Office files already downloaded."
+    Write-Host "Skipping download."
 }
 
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "Office 2024 Installer Alpha"
-$form.Size = New-Object System.Drawing.Size(540, 560)
-$form.StartPosition = "CenterScreen"
+Write-Host ""
+Write-Host "Installing Office..."
 
-$title = New-Object System.Windows.Forms.Label
-$title.Text = "Office 2024 LTSC Installer"
-$title.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
-$title.Location = New-Object System.Drawing.Point(20, 20)
-$title.Size = New-Object System.Drawing.Size(480, 35)
-$form.Controls.Add($title)
+$install = Start-Process `
+    -FilePath $setup `
+    -ArgumentList "/configure", $config `
+    -WorkingDirectory $base `
+    -Wait `
+    -PassThru
 
-$subtitle = New-Object System.Windows.Forms.Label
-$subtitle.Text = "Select apps to install. Teams, OneDrive, and Skype/Lync are always excluded."
-$subtitle.Location = New-Object System.Drawing.Point(22, 60)
-$subtitle.Size = New-Object System.Drawing.Size(480, 25)
-$form.Controls.Add($subtitle)
-
-$appNames = @("Word", "Excel", "PowerPoint", "Outlook", "OneNote", "Access", "Publisher")
-$checkboxes = @()
-$y = 100
-
-foreach ($app in $appNames) {
-    $cb = New-Object System.Windows.Forms.CheckBox
-    $cb.Text = $app
-    $cb.Location = New-Object System.Drawing.Point(35, $y)
-    $cb.Size = New-Object System.Drawing.Size(180, 25)
-
-    if ($app -eq "Word" -or $app -eq "Excel") {
-        $cb.Checked = $true
-    }
-
-    $checkboxes += $cb
-    $form.Controls.Add($cb)
-    $y += 30
+if ($install.ExitCode -eq 0) {
+    Write-Host ""
+    Write-Host "Office installed successfully."
+} else {
+    Write-Host ""
+    Write-Host "Install failed."
+    Write-Host "Exit code: $($install.ExitCode)"
 }
 
-$installButton = New-Object System.Windows.Forms.Button
-$installButton.Text = "Install"
-$installButton.Location = New-Object System.Drawing.Point(280, 100)
-$installButton.Size = New-Object System.Drawing.Size(180, 40)
-$installButton.Add_Click({ Run-Installer })
-$form.Controls.Add($installButton)
-
-$exitButton = New-Object System.Windows.Forms.Button
-$exitButton.Text = "Exit"
-$exitButton.Location = New-Object System.Drawing.Point(280, 150)
-$exitButton.Size = New-Object System.Drawing.Size(180, 40)
-$exitButton.Add_Click({ $form.Close() })
-$form.Controls.Add($exitButton)
-
-$etaLabel = New-Object System.Windows.Forms.Label
-$etaLabel.Text = "ETA: --:--"
-$etaLabel.Location = New-Object System.Drawing.Point(300, 285)
-$etaLabel.Size = New-Object System.Drawing.Size(160, 20)
-$form.Controls.Add($etaLabel)
-
-$downloadLabel = New-Object System.Windows.Forms.Label
-$downloadLabel.Text = "Downloaded: 0 GB / $estimatedGB GB"
-$downloadLabel.Location = New-Object System.Drawing.Point(25, 310)
-$downloadLabel.Size = New-Object System.Drawing.Size(260, 20)
-$form.Controls.Add($downloadLabel)
-
-$speedTitle = New-Object System.Windows.Forms.Label
-$speedTitle.Text = "Speed:"
-$speedTitle.Location = New-Object System.Drawing.Point(300, 310)
-$speedTitle.Size = New-Object System.Drawing.Size(60, 20)
-$form.Controls.Add($speedTitle)
-
-$speedLabel = New-Object System.Windows.Forms.Label
-$speedLabel.Text = "0 MB/s"
-$speedLabel.Location = New-Object System.Drawing.Point(360, 310)
-$speedLabel.Size = New-Object System.Drawing.Size(140, 20)
-$form.Controls.Add($speedLabel)
-
-$progress = New-Object System.Windows.Forms.ProgressBar
-$progress.Location = New-Object System.Drawing.Point(25, 340)
-$progress.Size = New-Object System.Drawing.Size(475, 25)
-$form.Controls.Add($progress)
-
-$statusBox = New-Object System.Windows.Forms.TextBox
-$statusBox.Location = New-Object System.Drawing.Point(25, 380)
-$statusBox.Size = New-Object System.Drawing.Size(475, 120)
-$statusBox.Multiline = $true
-$statusBox.ScrollBars = "Vertical"
-$statusBox.ReadOnly = $true
-$form.Controls.Add($statusBox)
-
-[void]$form.ShowDialog()
+Read-Host "Press Enter to exit"
