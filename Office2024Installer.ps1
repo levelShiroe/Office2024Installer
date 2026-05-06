@@ -5,9 +5,30 @@ $odtExe = "$base\officedeploymenttool.exe"
 $setup = "$base\setup.exe"
 $config = "$base\config.xml"
 $officeFolder = "$base\Office"
+$officeDataFolder = "$base\Office\Data"
+$estimatedGB = 4.5
 
 New-Item -ItemType Directory -Path $base -Force | Out-Null
 Set-Location $base
+
+function Test-OfficeCache {
+    if (!(Test-Path $officeDataFolder)) {
+        return $false
+    }
+
+    $files = Get-ChildItem $officeDataFolder -Recurse -File -ErrorAction SilentlyContinue
+    $totalSize = ($files | Measure-Object Length -Sum).Sum
+
+    if ($files.Count -lt 10) {
+        return $false
+    }
+
+    if ($totalSize -lt 1GB) {
+        return $false
+    }
+
+    return $true
+}
 
 if (!(Test-Path $setup)) {
     Write-Host "Downloading Office Deployment Tool..."
@@ -66,11 +87,9 @@ foreach ($app in $apps) {
     }
 }
 
-# Always exclude these unwanted apps/components
 $excluded += "Teams"
-$excluded += "Lync"      # Skype for Business
+$excluded += "Lync"
 $excluded += "OneDrive"
-
 $excluded = $excluded | Sort-Object -Unique
 
 $excludeXml = ""
@@ -101,9 +120,9 @@ Write-Host ""
 Get-Content $config
 Write-Host ""
 
-if (!(Test-Path $officeFolder)) {
+if (!(Test-OfficeCache)) {
     Write-Host ""
-    Write-Host "Downloading Office files..."
+    Write-Host "No valid Office cache found. Downloading Office files..."
 
     $download = Start-Process `
         -FilePath $setup `
@@ -113,15 +132,14 @@ if (!(Test-Path $officeFolder)) {
 
     $lastSize = 0
     $lastTime = Get-Date
-    $estimatedGB = 4.5
 
     while (-not $download.HasExited) {
-        Start-Sleep 2
+        Start-Sleep -Milliseconds 700
 
-        if (Test-Path $officeFolder) {
+        if (Test-Path $officeDataFolder) {
             $size = (
                 Get-ChildItem `
-                    $officeFolder `
+                    $officeDataFolder `
                     -Recurse `
                     -ErrorAction SilentlyContinue |
                 Measure-Object Length -Sum
@@ -132,9 +150,10 @@ if (!(Test-Path $officeFolder)) {
 
         $now = Get-Date
         $seconds = ($now - $lastTime).TotalSeconds
+        $delta = $size - $lastSize
 
-        if ($seconds -gt 0) {
-            $speed = (($size - $lastSize) / 1MB) / $seconds
+        if ($seconds -gt 0 -and $delta -gt 0) {
+            $speed = ($delta / 1MB) / $seconds
         } else {
             $speed = 0
         }
@@ -160,6 +179,8 @@ if (!(Test-Path $officeFolder)) {
         $lastTime = $now
     }
 
+    Write-Progress -Activity "Downloading Office 2024" -Completed
+
     if ($download.ExitCode -ne 0) {
         Write-Host ""
         Write-Host "Download failed."
@@ -167,9 +188,10 @@ if (!(Test-Path $officeFolder)) {
         Read-Host "Press Enter to exit"
         exit
     }
+
 } else {
     Write-Host ""
-    Write-Host "Office files already downloaded."
+    Write-Host "Valid Office cache found."
     Write-Host "Skipping download."
 }
 
