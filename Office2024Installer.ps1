@@ -21,12 +21,68 @@ $setup = "$base\setup.exe"
 $config = "$base\config.xml"
 $officeFolder = "$base\Office"
 $officeDataFolder = "$base\Office\Data"
+
 $estimatedGB = 4.5
 
 function Log($msg) {
     $statusBox.AppendText("[$(Get-Date -Format HH:mm:ss)] $msg`r`n")
     $statusBox.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Get-SelectedApps {
+    $selected = @()
+
+    foreach ($cb in $checkboxes) {
+        if ($cb.Checked) {
+            $selected += $cb.Text
+        }
+    }
+
+    return $selected
+}
+
+function Update-EstimatedSize {
+    $selected = Get-SelectedApps
+    $count = $selected.Count
+
+    if ($count -le 0) {
+        $script:estimatedGB = 0
+    }
+    elseif ($selected.Count -eq 1 -and $selected -contains "Word") {
+        $script:estimatedGB = 1.8
+    }
+    elseif ($selected.Count -eq 1 -and $selected -contains "Excel") {
+        $script:estimatedGB = 1.8
+    }
+    elseif (
+        $selected.Count -eq 2 -and
+        $selected -contains "Word" -and
+        $selected -contains "Excel"
+    ) {
+        $script:estimatedGB = 2.4
+    }
+    elseif ($count -eq 2) {
+        $script:estimatedGB = 2.8
+    }
+    elseif ($count -eq 3) {
+        $script:estimatedGB = 3.2
+    }
+    elseif ($count -eq 4) {
+        $script:estimatedGB = 3.7
+    }
+    elseif ($count -eq 5) {
+        $script:estimatedGB = 4.1
+    }
+    else {
+        $script:estimatedGB = 4.5
+    }
+
+    if ($script:estimatedGB -le 0) {
+        $downloadLabel.Text = "Downloaded: select at least one app"
+    } else {
+        $downloadLabel.Text = "Downloaded: 0 GB / $script:estimatedGB GB"
+    }
 }
 
 function Test-OfficeCache {
@@ -60,7 +116,6 @@ function Create-Config {
         }
     }
 
-    # Always exclude extras
     $excluded += "Teams"
     $excluded += "Lync"      # Skype for Business
     $excluded += "OneDrive"
@@ -97,17 +152,37 @@ function Update-DownloadStats {
 
     $progress.Value = [math]::Min(100, [int]$Percent)
     $speedLabel.Text = "$([math]::Round($Speed, 2)) MB/s"
-    $downloadLabel.Text = "Downloaded: $GB GB / $estimatedGB GB"
+    $downloadLabel.Text = "Downloaded: $GB GB / $script:estimatedGB GB"
     $etaLabel.Text = "ETA: $ETA"
 
     [System.Windows.Forms.Application]::DoEvents()
 }
 
+function Stop-OfficeSetupProcesses {
+    Get-Process setup -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+
+    Get-Process OfficeClickToRun -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
 function Run-Installer {
+    Update-EstimatedSize
+
+    if ($script:estimatedGB -le 0) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Please select at least one Office app.",
+            "No apps selected",
+            "OK",
+            "Warning"
+        ) | Out-Null
+        return
+    }
+
     $installButton.Enabled = $false
     $progress.Value = 0
     $speedLabel.Text = "0 MB/s"
-    $downloadLabel.Text = "Downloaded: 0 GB / $estimatedGB GB"
+    $downloadLabel.Text = "Downloaded: 0 GB / $script:estimatedGB GB"
     $etaLabel.Text = "ETA: --:--"
 
     try {
@@ -173,11 +248,11 @@ function Run-Installer {
 
                 $percent = [math]::Min(
                     100,
-                    [math]::Round(($gb / $estimatedGB) * 100, 1)
+                    [math]::Round(($gb / $script:estimatedGB) * 100, 1)
                 )
 
                 if ($speed -gt 0) {
-                    $remainingGB = [math]::Max(0, $estimatedGB - $gb)
+                    $remainingGB = [math]::Max(0, $script:estimatedGB - $gb)
                     $etaSeconds = ($remainingGB * 1024) / $speed
                     $etaText = "{0:mm\:ss}" -f ([TimeSpan]::FromSeconds($etaSeconds))
                 } else {
@@ -195,7 +270,7 @@ function Run-Installer {
                 return
             }
 
-            Update-DownloadStats -GB $estimatedGB -Speed 0 -Percent 100 -ETA "00:00"
+            Update-DownloadStats -GB $script:estimatedGB -Speed 0 -Percent 100 -ETA "00:00"
             Log "Office files downloaded."
         } else {
             Log "Valid Office cache found. Skipping download."
@@ -204,6 +279,10 @@ function Run-Installer {
             $speedLabel.Text = "0 MB/s"
             $etaLabel.Text = "ETA: 00:00"
         }
+
+        Log "Stopping old Office setup processes..."
+        Stop-OfficeSetupProcesses
+        Start-Sleep -Seconds 3
 
         Log "Installing Office..."
         $progress.Value = 80
@@ -262,6 +341,8 @@ foreach ($app in $appNames) {
         $cb.Checked = $true
     }
 
+    $cb.Add_CheckedChanged({ Update-EstimatedSize })
+
     $checkboxes += $cb
     $form.Controls.Add($cb)
     $y += 30
@@ -317,5 +398,7 @@ $statusBox.Multiline = $true
 $statusBox.ScrollBars = "Vertical"
 $statusBox.ReadOnly = $true
 $form.Controls.Add($statusBox)
+
+Update-EstimatedSize
 
 [void]$form.ShowDialog()
