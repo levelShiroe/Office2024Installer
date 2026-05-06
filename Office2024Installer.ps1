@@ -4,7 +4,6 @@ $odtUrl = "https://download.microsoft.com/download/6c1eeb25-cf8b-41d9-8d0d-cc1db
 $odtExe = "$base\officedeploymenttool.exe"
 $setup = "$base\setup.exe"
 $config = "$base\config.xml"
-$officeFolder = "$base\Office"
 $officeDataFolder = "$base\Office\Data"
 $estimatedGB = 4.5
 
@@ -19,15 +18,7 @@ function Test-OfficeCache {
     $files = Get-ChildItem $officeDataFolder -Recurse -File -ErrorAction SilentlyContinue
     $totalSize = ($files | Measure-Object Length -Sum).Sum
 
-    if ($files.Count -lt 10) {
-        return $false
-    }
-
-    if ($totalSize -lt 1GB) {
-        return $false
-    }
-
-    return $true
+    return ($files.Count -ge 10 -and $totalSize -gt 1GB)
 }
 
 if (!(Test-Path $setup)) {
@@ -35,10 +26,7 @@ if (!(Test-Path $setup)) {
     Invoke-WebRequest $odtUrl -OutFile $odtExe
 
     Write-Host "Extracting Office Deployment Tool..."
-    Start-Process `
-        -FilePath $odtExe `
-        -ArgumentList "/quiet", "/extract:$base" `
-        -Wait
+    Start-Process -FilePath $odtExe -ArgumentList "/quiet", "/extract:$base" -Wait
 }
 
 if (!(Test-Path $setup)) {
@@ -53,7 +41,6 @@ function Ask-App {
     while ($true) {
         Write-Host ""
         Write-Host "Install $Name ? [Y/N] " -NoNewline
-
         $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         $choice = $key.Character.ToString().ToUpper()
 
@@ -69,16 +56,7 @@ function Ask-App {
     }
 }
 
-$apps = @(
-    "Word",
-    "Excel",
-    "PowerPoint",
-    "Outlook",
-    "OneNote",
-    "Access",
-    "Publisher"
-)
-
+$apps = @("Word", "Excel", "PowerPoint", "Outlook", "OneNote", "Access", "Publisher")
 $excluded = @()
 
 foreach ($app in $apps) {
@@ -109,10 +87,7 @@ $excludeXml    </Product>
 </Configuration>
 "@
 
-Set-Content `
-    -Path $config `
-    -Value $xml `
-    -Encoding UTF8
+Set-Content -Path $config -Value $xml -Encoding UTF8
 
 Write-Host ""
 Write-Host "Generated config.xml:"
@@ -138,10 +113,7 @@ if (!(Test-OfficeCache)) {
 
         if (Test-Path $officeDataFolder) {
             $size = (
-                Get-ChildItem `
-                    $officeDataFolder `
-                    -Recurse `
-                    -ErrorAction SilentlyContinue |
+                Get-ChildItem $officeDataFolder -Recurse -ErrorAction SilentlyContinue |
                 Measure-Object Length -Sum
             ).Sum
         } else {
@@ -159,21 +131,14 @@ if (!(Test-OfficeCache)) {
         }
 
         $gb = [math]::Round($size / 1GB, 2)
-
-        $percent = [math]::Min(
-            100,
-            [math]::Round(($gb / $estimatedGB) * 100, 1)
-        )
+        $percent = [math]::Min(100, [math]::Round(($gb / $estimatedGB) * 100, 1))
 
         Write-Progress `
             -Activity "Downloading Office 2024" `
             -Status "$gb GB | $([math]::Round($speed,2)) MB/s | $percent%" `
             -PercentComplete $percent
 
-        Write-Host (
-            "Downloaded: {0} GB | Speed: {1:N2} MB/s | {2}%" `
-            -f $gb, $speed, $percent
-        )
+        Write-Host ("Downloaded: {0} GB | Speed: {1:N2} MB/s | {2}%" -f $gb, $speed, $percent)
 
         $lastSize = $size
         $lastTime = $now
@@ -188,7 +153,6 @@ if (!(Test-OfficeCache)) {
         Read-Host "Press Enter to exit"
         exit
     }
-
 } else {
     Write-Host ""
     Write-Host "Valid Office cache found."
@@ -199,9 +163,9 @@ Write-Host ""
 Write-Host "Installing Office..."
 
 $install = Start-Process `
-    -FilePath $setup `
-    -ArgumentList "/configure", $config `
-    -WorkingDirectory $base `
+    -FilePath "C:\Office2024\setup.exe" `
+    -ArgumentList "/configure", "C:\Office2024\config.xml" `
+    -WorkingDirectory "C:\Office2024" `
     -Wait `
     -PassThru
 
