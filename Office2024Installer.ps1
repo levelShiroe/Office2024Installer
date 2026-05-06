@@ -7,12 +7,25 @@ $odtExe = "$base\officedeploymenttool.exe"
 $setup = "$base\setup.exe"
 $config = "$base\config.xml"
 $officeFolder = "$base\Office"
+$officeDataFolder = "$base\Office\Data"
 $estimatedGB = 4.5
 
 function Log($msg) {
     $statusBox.AppendText("[$(Get-Date -Format HH:mm:ss)] $msg`r`n")
     $statusBox.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Get-OfficeDownloadSize {
+    if (Test-Path $officeDataFolder) {
+        return (Get-ChildItem $officeDataFolder -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+    }
+
+    if (Test-Path $officeFolder) {
+        return (Get-ChildItem $officeFolder -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+    }
+
+    return 0
 }
 
 function Create-Config {
@@ -24,8 +37,9 @@ function Create-Config {
         }
     }
 
+    # Always exclude junk/extras
     $excluded += "Teams"
-    $excluded += "Lync"
+    $excluded += "Lync"      # Skype for Business
     $excluded += "OneDrive"
     $excluded = $excluded | Sort-Object -Unique
 
@@ -36,16 +50,18 @@ function Create-Config {
 
     $xml = @"
 <Configuration>
-  <Add OfficeClientEdition="64" Channel="PerpetualVL2024">
+  <Add OfficeClientEdition="64" Channel="PerpetualVL2024" SourcePath="C:\Office2024">
     <Product ID="ProPlus2024Volume">
       <Language ID="en-us"/>
 $excludeXml    </Product>
   </Add>
   <Display Level="Full" AcceptEULA="TRUE"/>
+  <Property Name="FORCEAPPSHUTDOWN" Value="TRUE"/>
 </Configuration>
 "@
 
-    Set-Content -Path $config -Value $xml -Encoding UTF8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($config, $xml, $utf8NoBom)
 }
 
 function Update-DownloadStats {
@@ -104,7 +120,7 @@ function Run-Installer {
 
             $download = Start-Process `
                 -FilePath $setup `
-                -ArgumentList "/download", $config `
+                -ArgumentList "/download", "config.xml" `
                 -WorkingDirectory $base `
                 -PassThru
 
@@ -112,22 +128,15 @@ function Run-Installer {
             $lastTime = Get-Date
 
             while (-not $download.HasExited) {
-                Start-Sleep 2
+                Start-Sleep -Milliseconds 700
 
-                if (Test-Path $officeFolder) {
-                    $size = (
-                        Get-ChildItem $officeFolder -Recurse -ErrorAction SilentlyContinue |
-                        Measure-Object Length -Sum
-                    ).Sum
-                } else {
-                    $size = 0
-                }
-
+                $size = Get-OfficeDownloadSize
                 $now = Get-Date
                 $seconds = ($now - $lastTime).TotalSeconds
+                $delta = $size - $lastSize
 
-                if ($seconds -gt 0) {
-                    $speed = (($size - $lastSize) / 1MB) / $seconds
+                if ($seconds -gt 0 -and $delta -gt 0) {
+                    $speed = ($delta / 1MB) / $seconds
                 } else {
                     $speed = 0
                 }
@@ -138,8 +147,7 @@ function Run-Installer {
                 if ($speed -gt 0) {
                     $remainingGB = [math]::Max(0, $estimatedGB - $gb)
                     $etaSeconds = ($remainingGB * 1024) / $speed
-                    $eta = [TimeSpan]::FromSeconds($etaSeconds)
-                    $etaText = "{0:mm\:ss}" -f $eta
+                    $etaText = "{0:mm\:ss}" -f ([TimeSpan]::FromSeconds($etaSeconds))
                 } else {
                     $etaText = "--:--"
                 }
@@ -161,17 +169,19 @@ function Run-Installer {
             Log "Office files already exist. Skipping download."
             $progress.Value = 70
             $downloadLabel.Text = "Downloaded: already cached"
-            $speedLabel.Text = "Speed: cached"
+            $speedLabel.Text = "Speed: 0 MB/s"
             $etaLabel.Text = "ETA: 00:00"
         }
 
         Log "Installing Office..."
         $progress.Value = 80
 
+        Set-Location $base
+
+        # Raid boss fix: run ODT exactly like manual CMD from C:\Office2024
         $install = Start-Process `
-            -FilePath $setup `
-            -ArgumentList "/configure", $config `
-            -WorkingDirectory $base `
+            -FilePath "cmd.exe" `
+            -ArgumentList "/c", "cd /d C:\Office2024 && setup.exe /configure config.xml" `
             -Wait `
             -PassThru
 
@@ -180,6 +190,7 @@ function Run-Installer {
             Log "Office installed successfully."
         } else {
             Log "ERROR: Install failed. Exit code: $($install.ExitCode)"
+            Log "Manual fallback: open CMD as admin, run: cd /d C:\Office2024 && setup.exe /configure config.xml"
         }
     }
     catch {
